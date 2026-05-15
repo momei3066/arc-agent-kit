@@ -1,0 +1,213 @@
+# arc-agent-kit
+
+[![CI](https://github.com/your-handle/arc-agent-kit/actions/workflows/ci.yml/badge.svg)](https://github.com/your-handle/arc-agent-kit/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](./LICENSE)
+[![Node](https://img.shields.io/badge/node-%3E%3D20-brightgreen)](https://nodejs.org)
+
+A typed toolkit that lets **LLM agents transact on [Arc Network](https://arc.network)** — Circle's stablecoin-native L1. Ships:
+
+- A **viem-based SDK** for balances, transfers, simulation, and CCTP queries
+- An **MCP server** so Claude Desktop / Cursor / any MCP client can drive Arc directly
+- A **CLI** (`arc balance`, `arc send-usdc`, …) for humans
+- **Anthropic / OpenAI function-call schemas** for embedding in your own agents
+- A safe **wallet generator** that never prints the private key
+
+> Status: working on Arc public testnet (chain id `5042002`). No security review. Use testnet funds only.
+
+## Why this exists
+
+Arc went public testnet with a focus on stablecoin payments, AI-driven economic coordination, and CCTP-powered cross-chain flows. Most of that surface is reachable through plain EVM tools — but agents need typed, sandboxed primitives, simulation before send, and an MCP transport to actually be useful. This kit packages that.
+
+## 30-second tour
+
+```bash
+git clone https://github.com/<you>/arc-agent-kit && cd arc-agent-kit
+npm install
+cp .env.example .env
+
+npm run gen-wallet                 # generates a key — never prints it
+open https://faucet.circle.com     # fund the printed address
+
+npx arc info                       # chain + signer info
+npx arc balance 0xYourAddress      # USDC + EURC
+npx arc simulate-usdc 0xFrom 0xTo 0.5   # dry-run, no spend
+npx arc send-usdc 0xTo 0.01        # real transfer on testnet
+npx arc tx 0xHash                  # confirm it landed
+```
+
+Add to Claude Desktop's `claude_desktop_config.json`:
+
+```json
+{
+  "mcpServers": {
+    "arc": {
+      "command": "npx",
+      "args": ["arc-agent-kit", "arc-mcp"],
+      "env": { "ARC_PRIVATE_KEY": "0x..." }
+    }
+  }
+}
+```
+
+Now Claude can run any of these tools from any conversation:
+
+```
+arc_chain_info · arc_get_usdc_balance · arc_get_eurc_balance
+arc_get_transaction_status · arc_simulate_send_usdc · arc_simulate_send_eurc
+arc_cctp_info · arc_send_usdc · arc_send_eurc
+```
+
+## What's in the box
+
+```
+src/
+  constants.ts      Arc chain config, contract addresses, viem Chain object
+  client.ts         publicClient() / walletClient()
+  tools.ts          balance, transfer, status, explorer links
+  simulate.ts       Pre-flight: estimateGas + simulate + fee preview
+  cctp.ts           CCTP V2 contracts, domain IDs, getArcDomain() query
+  agent-tools.ts    Anthropic-shape tool schemas + dispatchTool()
+  mcp.ts            MCP server (stdio) exposing every tool
+  index.ts          Public re-exports
+
+bin/
+  arc.ts            CLI entry — npx arc <command>
+  arc-mcp.ts        MCP server entry — npx arc-mcp
+  gen-wallet.ts     Safe wallet generation; private key only to .env (0600)
+
+examples/
+  check-balance.ts  Read-only
+  send-usdc.ts      Native USDC transfer
+  send-eurc.ts      ERC-20 EURC transfer
+  simulate-send.ts  Dry-run preview
+  claude-agent.ts   Full Claude agent loop with prompt caching
+
+test/
+  tools.test.ts     Smoke tests, no network/key required
+```
+
+## Arc testnet facts this repo depends on
+
+Sourced from [docs.arc.network](https://docs.arc.network) — pinned in [`src/constants.ts`](./src/constants.ts).
+
+| | Value |
+|---|---|
+| RPC | `https://rpc.testnet.arc.network` |
+| Chain ID | `5042002` (`0x4CEF52`) |
+| Native currency | USDC, **18 decimals** |
+| Explorer | `https://testnet.arcscan.app` |
+| USDC ERC-20 | `0x3600000000000000000000000000000000000000` |
+| EURC | `0x89B50855Aa3bE2F677cD6303Cec089B5F319D72a` |
+| CCTP V2 TokenMessenger | `0x8FE6B999Dc680CcFDD5Bf7EB0974218be2542DAA` |
+| Faucet | `https://faucet.circle.com` |
+
+**Decimals gotcha**: native USDC on Arc is 18-decimals (EVM precompile convention), while bridged ERC-20 USDC on other chains is 6. This kit's `sendUSDC` takes a decimal string (`"0.5"`) and handles the unit math — never multiply by `10^18` yourself.
+
+## Using it as a library
+
+```ts
+import {
+  publicClient,
+  walletClient,
+  getUSDCBalance,
+  sendUSDC,
+  simulateSendUSDC,
+  formatSimulation,
+} from "arc-agent-kit";
+
+const pub = publicClient();
+console.log(await getUSDCBalance(pub, "0xabc…"));    // "12.34"
+
+const wallet = walletClient(process.env.ARC_PRIVATE_KEY!);
+const sim = await simulateSendUSDC(pub, wallet.account!.address, "0xdef…", "0.5");
+console.log(formatSimulation(sim));
+
+const { hash, explorerUrl } = await sendUSDC(wallet, "0xdef…", "0.5");
+console.log(`Sent: ${explorerUrl}`);
+```
+
+## Using it from Claude (function calling)
+
+```ts
+import Anthropic from "@anthropic-ai/sdk";
+import {
+  arcAgentTools,
+  dispatchTool,
+  publicClient,
+  walletClient,
+} from "arc-agent-kit";
+
+const anthropic = new Anthropic();
+const deps = {
+  pub: publicClient(),
+  wallet: walletClient(process.env.ARC_PRIVATE_KEY!),
+};
+
+// ... model loop: for each tool_use block, call dispatchTool(name, input, deps)
+//     and feed the result back as tool_result. See examples/claude-agent.ts.
+```
+
+## Using it from any MCP client
+
+The `arc-mcp` binary speaks MCP over stdio. Any client that supports MCP (Claude Desktop, Cursor, Cline, Zed, custom hosts via the official SDK) can attach to it. Configuration shown above for Claude Desktop; the pattern is the same elsewhere.
+
+If you don't pass `ARC_PRIVATE_KEY`, the server starts in **read-only mode** — `arc_get_*` and simulation tools work, but `arc_send_*` refuses. Useful for letting Claude *browse* Arc without giving it spending power.
+
+## Architecture
+
+```
+       ┌─────────────────────────┐
+       │  Claude / Cursor / app  │
+       └────────────┬────────────┘
+                    │
+       ┌────────────┴────────────┐
+       │   MCP stdio transport   │   bin/arc-mcp.ts
+       └────────────┬────────────┘
+                    │
+       ┌────────────┴────────────┐
+       │       src/mcp.ts        │
+       │  buildServer({pk?, rpc?})│
+       └────────────┬────────────┘
+                    │
+   ┌────────────────┼────────────────┐
+   │                │                │
+┌──┴──────┐  ┌──────┴──────┐  ┌──────┴──────┐
+│ tools.ts│  │ simulate.ts │  │   cctp.ts   │
+└──┬──────┘  └──────┬──────┘  └──────┬──────┘
+   │                │                │
+   └────────────────┼────────────────┘
+                    │
+         ┌──────────┴──────────┐
+         │   src/client.ts     │   viem publicClient / walletClient
+         └──────────┬──────────┘
+                    │
+            ┌───────┴───────┐
+            │ Arc testnet   │   https://rpc.testnet.arc.network
+            └───────────────┘
+```
+
+The CLI (`bin/arc.ts`) sits on the same tools/simulate/cctp layer — no logic duplication.
+
+## Security notes
+
+- **Testnet only.** No audit, no security review. Don't reuse keys that hold mainnet balances.
+- `gen-wallet` creates `.env` with mode `0600`; the private key never reaches stdout/stderr.
+- `.env` is in `.gitignore` — confirm before pushing.
+- The Claude agent loop has a `MAX_TURNS` cap so a confused model can't drain a wallet across thousands of calls. Still, only fund the signing wallet with what you can afford to lose.
+- Always `simulate-*` before a `send-*` in critical paths — viem will surface revert reasons.
+
+## Roadmap
+
+- [ ] CCTP V2 burn helper for Arc-side `depositForBurn`
+- [ ] Iris attestation polling + dest-chain `receiveMessage` orchestration
+- [ ] OpenAI function-call schema exporter (current shape drops in with a `parameters` rename)
+- [ ] Gateway deposit / withdraw flow
+- [ ] Recurring-payment primitive (subscriptions, drip)
+- [ ] Hardhat plugin: one-command Arc deploys
+- [ ] Web demo: a payment-link generator (Stripe Checkout-style) backed by `simulate_send_usdc`
+
+Issues and PRs welcome.
+
+## License
+
+MIT — see [LICENSE](./LICENSE).
