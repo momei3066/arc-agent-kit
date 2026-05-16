@@ -2,6 +2,7 @@ export * from "./constants.js";
 export * from "./client.js";
 export * from "./tools.js";
 export * from "./agent-tools.js";
+export * from "./openai-tools.js";
 export * from "./simulate.js";
 export * from "./cctp.js";
 export * from "./x402.js";

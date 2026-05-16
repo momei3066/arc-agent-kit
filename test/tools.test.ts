@@ -18,6 +18,11 @@ import { CCTP_DOMAINS, domainForChain } from "../src/cctp.js";
 import { explorerLink, addressLink } from "../src/tools.js";
 import { buildServer } from "../src/mcp.js";
 import { X402_ARC_NETWORK, buildArcX402Client } from "../src/x402.js";
+import {
+  arcAgentToolsOpenAI,
+  dispatchOpenAIToolCall,
+} from "../src/openai-tools.js";
+import { publicClient } from "../src/client.js";
 
 test("Arc testnet chain config matches docs", () => {
   assert.equal(ARC_TESTNET_CHAIN_ID, 5042002);
@@ -107,4 +112,37 @@ test("x402 client rejects malformed private keys", () => {
 test("agent toolset includes pay_x402", () => {
   const names = new Set<string>(arcAgentTools.map((t) => t.name));
   assert.ok(names.has("pay_x402"), "pay_x402 tool is registered");
+});
+
+test("OpenAI tool shape mirrors Anthropic shape 1:1", () => {
+  // Same count, same names, same descriptions — only the wrapping shape differs.
+  assert.equal(arcAgentToolsOpenAI.length, arcAgentTools.length);
+  for (const ot of arcAgentToolsOpenAI) {
+    assert.equal(ot.type, "function");
+    assert.ok(ot.function.name);
+    assert.ok(ot.function.description.length > 20);
+    assert.equal(ot.function.parameters.type, "object");
+    assert.ok(Array.isArray(ot.function.parameters.required));
+    // The matching Anthropic tool exists with identical name + description.
+    const anth = arcAgentTools.find((t) => t.name === ot.function.name);
+    assert.ok(anth, `Anthropic counterpart found for ${ot.function.name}`);
+    assert.equal(ot.function.description, anth!.description);
+  }
+});
+
+test("OpenAI dispatcher parses JSON arguments and rejects malformed ones", async () => {
+  const deps = { pub: publicClient() };
+  // Malformed JSON → returns a tool message with an error, not throws.
+  const result = await dispatchOpenAIToolCall(
+    {
+      id: "call_test_1",
+      type: "function",
+      function: { name: "get_usdc_balance", arguments: "{not json" },
+    },
+    deps,
+  );
+  assert.equal(result.role, "tool");
+  assert.equal(result.tool_call_id, "call_test_1");
+  const parsed = JSON.parse(result.content) as { error?: string };
+  assert.match(parsed.error ?? "", /could not parse/);
 });

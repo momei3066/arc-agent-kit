@@ -82,6 +82,7 @@ src/
   cctp.ts           CCTP V2 contracts, domain IDs, getArcDomain() query
   x402.ts           HTTP 402 paid-fetch client wired to an Arc wallet
   agent-tools.ts    Anthropic-shape tool schemas + dispatchTool()
+  openai-tools.ts   OpenAI-shape tool schemas + dispatchOpenAIToolCall()
   mcp.ts            MCP server (stdio) exposing every tool
   index.ts          Public re-exports
 
@@ -141,7 +142,11 @@ const { hash, explorerUrl } = await sendUSDC(wallet, "0xdef…", "0.5");
 console.log(`Sent: ${explorerUrl}`);
 ```
 
-## Using it from Claude (function calling)
+## Using it with Claude or GPT (or any function-calling LLM)
+
+Same toolkit, two wire-compatible shapes.
+
+### Claude (Anthropic SDK)
 
 ```ts
 import Anthropic from "@anthropic-ai/sdk";
@@ -161,6 +166,36 @@ const deps = {
 // ... model loop: for each tool_use block, call dispatchTool(name, input, deps)
 //     and feed the result back as tool_result. See examples/claude-agent.ts.
 ```
+
+### GPT (OpenAI SDK — also works with LiteLLM, Ollama, vLLM, any OpenAI-API drop-in)
+
+```ts
+import OpenAI from "openai";
+import {
+  arcAgentToolsOpenAI,
+  dispatchOpenAIToolCalls,
+  publicClient,
+  walletClient,
+} from "arc-agent-kit";
+
+const openai = new OpenAI();
+const deps = {
+  pub: publicClient(),
+  wallet: walletClient(process.env.ARC_PRIVATE_KEY!),
+};
+
+const response = await openai.chat.completions.create({
+  model: "gpt-5",
+  tools: arcAgentToolsOpenAI,
+  messages: [{ role: "user", content: "What's my USDC balance on Arc?" }],
+});
+
+const toolCalls = response.choices[0]?.message.tool_calls ?? [];
+const toolMessages = await dispatchOpenAIToolCalls(toolCalls, deps);
+// Append toolMessages to the conversation, ask the model again, repeat.
+```
+
+Tool names, descriptions, and parameter schemas are identical across providers — prompts and agent behavior stay portable.
 
 ## Paying for HTTP APIs via x402
 
@@ -237,10 +272,10 @@ The CLI (`bin/arc.ts`) sits on the same tools/simulate/cctp layer — no logic d
 ## Roadmap
 
 - [x] **x402 paid-fetch client** — agents auto-pay 402 Payment Required in USDC on Arc
+- [x] **OpenAI function-call schemas + dispatcher** — full GPT / LiteLLM / vLLM parity with the Anthropic surface
 - [ ] x402 server-side example (Hono / Express middleware using Arc as the settlement chain)
 - [ ] CCTP V2 burn helper for Arc-side `depositForBurn`
 - [ ] Iris attestation polling + dest-chain `receiveMessage` orchestration
-- [ ] OpenAI function-call schema exporter (current shape drops in with a `parameters` rename)
 - [ ] Gateway deposit / withdraw flow
 - [ ] Recurring-payment primitive (subscriptions, drip)
 - [ ] Hardhat plugin: one-command Arc deploys
