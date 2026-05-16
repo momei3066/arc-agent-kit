@@ -34,6 +34,17 @@ import {
 } from "../src/simulate.js";
 import { getArcDomain, getCctpContracts } from "../src/cctp.js";
 import {
+  createSubscription,
+  loadStore,
+  saveStore,
+  setStatus,
+  tickOnce,
+  runForever,
+  previewNextWindow,
+  parseDuration,
+  DEFAULT_STORE_PATH,
+} from "../src/recurring.js";
+import {
   ARC_TESTNET_CHAIN_ID,
   ARC_TESTNET_EXPLORER,
   ARC_TESTNET_RPC,
@@ -51,6 +62,16 @@ Commands:
   simulate-eurc <to> <amount>       Dry-run an EURC send. No key needed.
   tx <hash>                         Check a transaction's status.
   cctp                              Show CCTP V2 contracts + Arc's domain ID.
+
+  Subscriptions (off-chain recurring USDC payments):
+  subs add <to> <amount> <interval> [label]   Schedule (e.g. interval "1h", "1d").
+  subs list                                    List all subscriptions.
+  subs pause <id> / subs resume <id>           Toggle a subscription.
+  subs cancel <id>                             Cancel + remove.
+  subs tick                                    Run one scheduler pass (cron-friendly).
+  subs run                                     Run scheduler in foreground (Ctrl-C to stop).
+  subs preview                                  Will the wallet cover the next charge cycle?
+
   help                              Show this help.
 
 Environment (loaded from .env):
@@ -224,9 +245,129 @@ async function main() {
       return;
     }
 
+    case "subs": {
+      // argv: [node, script, "subs", sub, arg1, arg2, ...rest]
+      //       [   0,      1,      2,   3,    4,    5,  6+ ]
+      await runSubsCommand(pub, a, b, c, process.argv.slice(6));
+      return;
+    }
+
     default:
       fail(`unknown command: ${cmd}\n\n${HELP}`);
   }
+}
+
+/* -------------------- subs subcommand -------------------- */
+
+async function runSubsCommand(
+  pub: ReturnType<typeof publicClient>,
+  sub?: string,
+  arg1?: string,
+  arg2?: string,
+  rest: string[] = [],
+): Promise<void> {
+  const storePath = DEFAULT_STORE_PATH;
+  switch (sub) {
+    case "list": {
+      const store = loadStore(storePath);
+      if (store.subscriptions.length === 0) {
+        console.log("No subscriptions. Add one with `arc subs add ...`");
+        return;
+      }
+      for (const s of store.subscriptions) {
+        const nextIn = Math.max(0, Math.round((s.nextRunAt - Date.now()) / 1000));
+        console.log(
+          `[${s.id}] ${s.status.padEnd(9)} ${s.amount} USDC → ${s.to}  every ${s.intervalSeconds}s` +
+            (s.label ? `  (${s.label})` : "") +
+            `\n          ticks=${s.ticks}${s.maxTicks ? `/${s.maxTicks}` : ""}  nextIn=${nextIn}s  ` +
+            (s.lastTxHash ? `lastTx=${s.lastTxHash.slice(0, 12)}…` : "lastTx=(none)"),
+        );
+      }
+      return;
+    }
+
+    case "add": {
+      if (!isAddress(arg1) || !arg2 || !rest[0]) {
+        return fail(
+          "subs add: need <to> <amount> <interval> [label]\n" +
+            "  example: arc subs add 0xabc 0.01 1h my-rent-stream",
+        );
+      }
+      const intervalSeconds = parseDuration(rest[0]!);
+      const label = rest.slice(1).join(" ") || undefined;
+      const store = loadStore(storePath);
+      const created = createSubscription(store, {
+        to: arg1,
+        amount: arg2,
+        intervalSeconds,
+        label,
+      });
+      saveStore(store, storePath);
+      console.log(`Added subscription [${created.id}]`);
+      console.log(`  ${created.amount} USDC → ${created.to}`);
+      console.log(`  every ${created.intervalSeconds}s (≈${(created.intervalSeconds / 3600).toFixed(2)}h)`);
+      console.log(`  first run: now`);
+      return;
+    }
+
+    case "pause":
+    case "resume":
+    case "cancel": {
+      if (!arg1) return fail(`subs ${sub}: need <id>`);
+      const store = loadStore(storePath);
+      const status: "active" | "paused" | "cancelled" =
+        sub === "pause" ? "paused" : sub === "resume" ? "active" : "cancelled";
+      setStatus(store, arg1, status);
+      saveStore(store, storePath);
+      console.log(`subscription ${arg1} → ${status}`);
+      return;
+    }
+
+    case "tick": {
+      const wallet = getWallet();
+      const store = loadStore(storePath);
+      const results = await tickOnce(store, wallet, pub, storePath);
+      console.log(JSON.stringify(results, bigintSerializer, 2));
+      return;
+    }
+
+    case "run": {
+      const wallet = getWallet();
+      const interval = arg1 ? parseDuration(arg1) : 60;
+      console.log(`Scheduler running. Tick every ${interval}s. Ctrl-C to stop.`);
+      await runForever(storePath, wallet, pub, interval, (results) => {
+        const acted = results.filter((r) => r.outcome === "ran" || r.outcome === "failed");
+        if (acted.length === 0) return;
+        for (const r of acted) {
+          if (r.outcome === "ran") {
+            console.log(`✅ [${r.subscriptionId}] paid — ${r.txHash}`);
+          } else {
+            console.log(`❌ [${r.subscriptionId}] ${r.outcome}: ${r.reason ?? ""}`);
+          }
+        }
+      });
+      return;
+    }
+
+    case "preview": {
+      const wallet = getWallet();
+      const store = loadStore(storePath);
+      const from = wallet.account!.address;
+      const preview = await previewNextWindow(store, pub, from);
+      console.log(JSON.stringify(preview, null, 2));
+      return;
+    }
+
+    default:
+      fail(
+        `subs: unknown subcommand "${sub ?? ""}".\n` +
+          "Try: list | add | pause | resume | cancel | tick | run | preview",
+      );
+  }
+}
+
+function bigintSerializer(_key: string, value: unknown): unknown {
+  return typeof value === "bigint" ? value.toString() : value;
 }
 
 function fail(msg: string): never {

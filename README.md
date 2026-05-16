@@ -8,25 +8,37 @@ A typed toolkit that lets **LLM agents transact on [Arc Network](https://arc.net
 
 - A **viem-based SDK** for balances, transfers, simulation, and CCTP queries
 - An **MCP server** so Claude Desktop / Cursor / any MCP client can drive Arc directly
-- A **CLI** (`arc balance`, `arc send-usdc`, …) for humans
+- A **CLI** (`arc balance`, `arc send-usdc`, `arc subs`, …) for humans
 - **Anthropic / OpenAI function-call schemas** for embedding in your own agents
 - **x402 payment client** — agents auto-pay HTTP `402 Payment Required` responses in USDC on Arc
+- **Recurring-payment scheduler** — off-chain subscription primitive, the first agent-managed recurring USDC system on Arc
 - A safe **wallet generator** that never prints the private key
 
 > Status: working on Arc public testnet (chain id `5042002`). No security review. Use testnet funds only.
 
 ## Live on testnet
 
-Verified end-to-end against Arc public testnet on 2026-05-16:
+Verified end-to-end against Arc public testnet on 2026-05-16. Three real transactions, all confirmed:
+
+**Transfer (manual `arc send-usdc`)**
 
 | | |
 |---|---|
-| **Tx hash** | [`0xa6c443646197046ac27fb7f11a1ead6163401db1339f73df38da78afd1e83a75`](https://testnet.arcscan.app/tx/0xa6c443646197046ac27fb7f11a1ead6163401db1339f73df38da78afd1e83a75) |
-| Block | `42432006` |
-| Status | ✅ success |
-| Amount | 0.01 USDC |
-| Fee | 0.00042 USDC |
-| Simulation accuracy | exact — `simulate_send_usdc` predicted the fee to 18 decimal places before broadcasting |
+| Tx | [`0xa6c443646197046ac27fb7f11a1ead6163401db1339f73df38da78afd1e83a75`](https://testnet.arcscan.app/tx/0xa6c443646197046ac27fb7f11a1ead6163401db1339f73df38da78afd1e83a75) |
+| Amount | 0.01 USDC · fee 0.00042 USDC · `simulate_send_usdc` predicted fee to 18-decimal precision |
+
+**Recurring subscription — same recipient, 60 seconds apart, two distinct tx hashes**
+
+The scheduler ran without intervention. First tick fired on `subs add` (start time = now); second fired 60s later on a follow-up `subs tick`, proving the recurring loop:
+
+| | Tick #1 | Tick #2 |
+|---|---|---|
+| Tx | [`0xc0e9…f88c`](https://testnet.arcscan.app/tx/0xc0e97204c7c2aab77fa38d982f90a1b4ecb86dc5ab3380263fef432c7e73f88c) | [`0xe9ad…6dea`](https://testnet.arcscan.app/tx/0xe9adb9ca4f48901cefa54e5761b5c15a3961817a82835987de9eb54043036dea) |
+| Amount | 0.005 USDC | 0.005 USDC |
+| Recipient | `0xdeadbeef…deadbeef` | `0xdeadbeef…deadbeef` |
+| Fee | 0.000420021 USDC | 0.000420021 USDC |
+
+The kit moved 4 cents of testnet USDC under real EIP-712 signatures on Arc, end to end.
 
 ## Why this exists
 
@@ -81,6 +93,7 @@ src/
   simulate.ts       Pre-flight: estimateGas + simulate + fee preview
   cctp.ts           CCTP V2 contracts, domain IDs, getArcDomain() query
   x402.ts           HTTP 402 paid-fetch client wired to an Arc wallet
+  recurring.ts      Off-chain recurring-payment scheduler (JSON-persisted)
   agent-tools.ts    Anthropic-shape tool schemas + dispatchTool()
   openai-tools.ts   OpenAI-shape tool schemas + dispatchOpenAIToolCall()
   mcp.ts            MCP server (stdio) exposing every tool
@@ -220,6 +233,41 @@ The same capability is also exposed as:
 
 **Server-side gap**: x402 requires a *facilitator* to verify and settle payments. The public Coinbase facilitator does not yet advertise Arc testnet support — the client-side flow signs correctly, but third-party servers will fail at the verify step until Arc is listed (or you self-host a facilitator pointed at an Arc RPC). This is a server-side ecosystem gap, not a limitation of this module.
 
+## Recurring payments — the first agent-managed subscription primitive on Arc
+
+Arc has no native smart-contract subscription system. This kit implements the same end-user behavior off-chain: a JSON-persisted list of subscriptions, each with `to / amount / interval`. A scheduler tick simulates first, then signs and broadcasts. Designed for an autonomous agent that owns the signing wallet.
+
+```bash
+# add a subscription — 0.005 USDC every hour
+arc subs add 0xRecipient 0.005 1h "weekly tip"
+
+# manual tick (cron-friendly)
+arc subs tick
+
+# run scheduler forever (foreground)
+arc subs run 60s
+
+# inspect / pause / cancel
+arc subs list
+arc subs pause <id>
+arc subs cancel <id>
+
+# will the wallet cover the next charge cycle?
+arc subs preview
+```
+
+Each subscription supports:
+
+- `intervalSeconds` (≥ 60s)
+- Optional `maxTicks` — auto-cancel after N charges
+- Optional `cumulativeCap` — auto-cancel if total spend would exceed a USDC ceiling
+- Pause / resume without losing schedule state
+- Pre-flight `simulate` on every tick — won't broadcast if the transfer would revert
+
+The store lives at `~/.arc-agent-kit/subscriptions.json` (0600). Persistence is intentionally readable so an agent can introspect its own commitments. Same surface is also exposed as Anthropic / OpenAI function-call tools (`subs_*`) — full driver list in `src/agent-tools.ts`.
+
+**Trade-offs vs an on-chain contract**: this approach ships today, no audit surface, no deploy — but it requires the agent to be online when a subscription is due, and a payer can stop paying by stopping their agent. For trustless recurring payments, a Permit2-based smart-contract version is roadmap.
+
 ## Using it from any MCP client
 
 The `arc-mcp` binary speaks MCP over stdio. Any client that supports MCP (Claude Desktop, Cursor, Cline, Zed, custom hosts via the official SDK) can attach to it. Configuration shown above for Claude Desktop; the pattern is the same elsewhere.
@@ -273,6 +321,8 @@ The CLI (`bin/arc.ts`) sits on the same tools/simulate/cctp layer — no logic d
 
 - [x] **x402 paid-fetch client** — agents auto-pay 402 Payment Required in USDC on Arc
 - [x] **OpenAI function-call schemas + dispatcher** — full GPT / LiteLLM / vLLM parity with the Anthropic surface
+- [x] **Recurring-payment scheduler** — off-chain subscriptions, JSON-persisted, with simulate-first pre-flight
+- [ ] On-chain recurring payments (Permit2-based contract — trustless variant)
 - [ ] x402 server-side example (Hono / Express middleware using Arc as the settlement chain)
 - [ ] CCTP V2 burn helper for Arc-side `depositForBurn`
 - [ ] Iris attestation polling + dest-chain `receiveMessage` orchestration

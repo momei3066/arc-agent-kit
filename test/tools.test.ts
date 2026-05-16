@@ -23,6 +23,12 @@ import {
   dispatchOpenAIToolCall,
 } from "../src/openai-tools.js";
 import { publicClient } from "../src/client.js";
+import {
+  createSubscription,
+  parseDuration,
+  setStatus,
+  type SubscriptionStore,
+} from "../src/recurring.js";
 
 test("Arc testnet chain config matches docs", () => {
   assert.equal(ARC_TESTNET_CHAIN_ID, 5042002);
@@ -128,6 +134,72 @@ test("OpenAI tool shape mirrors Anthropic shape 1:1", () => {
     assert.ok(anth, `Anthropic counterpart found for ${ot.function.name}`);
     assert.equal(ot.function.description, anth!.description);
   }
+});
+
+test("recurring: parseDuration handles s/m/h/d and bare numbers", () => {
+  assert.equal(parseDuration("30"), 30);
+  assert.equal(parseDuration("30s"), 30);
+  assert.equal(parseDuration("5m"), 300);
+  assert.equal(parseDuration("1h"), 3600);
+  assert.equal(parseDuration("2d"), 172800);
+  assert.throws(() => parseDuration("xyz"));
+});
+
+test("recurring: createSubscription validates inputs", () => {
+  const store: SubscriptionStore = { version: 1, subscriptions: [] };
+  // Bad address
+  assert.throws(() =>
+    createSubscription(store, {
+      to: "0xnotanaddress" as `0x${string}`,
+      amount: "0.01",
+      intervalSeconds: 3600,
+    }),
+  );
+  // Bad amount
+  assert.throws(() =>
+    createSubscription(store, {
+      to: ("0x" + "a".repeat(40)) as `0x${string}`,
+      amount: "negative",
+      intervalSeconds: 3600,
+    }),
+  );
+  assert.throws(() =>
+    createSubscription(store, {
+      to: ("0x" + "a".repeat(40)) as `0x${string}`,
+      amount: "0",
+      intervalSeconds: 3600,
+    }),
+  );
+  // Sub-minute intervals rejected (test guardrail)
+  assert.throws(() =>
+    createSubscription(store, {
+      to: ("0x" + "a".repeat(40)) as `0x${string}`,
+      amount: "0.01",
+      intervalSeconds: 30,
+    }),
+  );
+});
+
+test("recurring: createSubscription + setStatus lifecycle", () => {
+  const store: SubscriptionStore = { version: 1, subscriptions: [] };
+  const sub = createSubscription(store, {
+    to: ("0x" + "b".repeat(40)) as `0x${string}`,
+    amount: "0.05",
+    intervalSeconds: 3600,
+    label: "test sub",
+  });
+  assert.match(sub.id, /^[a-f0-9]{12}$/);
+  assert.equal(sub.status, "active");
+  assert.equal(sub.ticks, 0);
+  assert.equal(store.subscriptions.length, 1);
+
+  setStatus(store, sub.id, "paused");
+  assert.equal(store.subscriptions[0]!.status, "paused");
+
+  setStatus(store, sub.id, "cancelled");
+  assert.equal(store.subscriptions[0]!.status, "cancelled");
+
+  assert.throws(() => setStatus(store, "nonexistent", "paused"));
 });
 
 test("OpenAI dispatcher parses JSON arguments and rejects malformed ones", async () => {

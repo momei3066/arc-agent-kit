@@ -28,7 +28,8 @@
     "example:send-eurc": "tsx examples/send-eurc.ts",
     "example:agent": "tsx examples/claude-agent.ts",
     "example:simulate": "tsx examples/simulate-send.ts",
-    "example:x402": "tsx examples/x402-pay.ts"
+    "example:x402": "tsx examples/x402-pay.ts",
+    "example:subs": "tsx examples/subscription-demo.ts"
   },
   "keywords": [
     "arc-network",
