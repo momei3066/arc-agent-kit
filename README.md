@@ -12,6 +12,7 @@ A typed toolkit that lets **LLM agents transact on [Arc Network](https://arc.net
 - **Anthropic / OpenAI function-call schemas** for embedding in your own agents
 - **x402 payment client** — agents auto-pay HTTP `402 Payment Required` responses in USDC on Arc
 - **Recurring-payment scheduler** — off-chain subscription primitive, the first agent-managed recurring USDC system on Arc
+- **On-chain subscription contract** — trustless recurring USDC payments via a deployed Solidity contract on Arc testnet
 - A safe **wallet generator** that never prints the private key
 
 > Status: working on Arc public testnet (chain id `5042002`). No security review. Use testnet funds only.
@@ -39,6 +40,27 @@ The scheduler ran without intervention. First tick fired on `subs add` (start ti
 | Fee | 0.000420021 USDC | 0.000420021 USDC |
 
 The kit moved 4 cents of testnet USDC under real EIP-712 signatures on Arc, end to end.
+
+**Deployed smart contract — trustless on-chain subscriptions**
+
+| | |
+|---|---|
+| Contract | [`0x9f356033d0ce4018040e7d15f1ce6860706d6979`](https://testnet.arcscan.app/address/0x9f356033d0ce4018040e7d15f1ce6860706d6979) |
+| Deploy tx | [`0xacbda944…687c0`](https://testnet.arcscan.app/tx/0xacbda9447b655c19ab6f4eb75c66f3b2bea6016f180f8805c9aa0e8294e687c0) |
+| Source | [`contracts/ArcSubscriptions.sol`](./contracts/ArcSubscriptions.sol) (~140 lines Solidity 0.8.20) |
+| Gas to deploy | 531,932 |
+
+The deploy was followed by a complete end-to-end run against the live contract — deposit, create, charge, cancel, withdraw — five more confirmed transactions:
+
+| Step | Tx |
+|---|---|
+| Deposit 0.05 USDC into escrow | [`0x06a48f0c…254bfb`](https://testnet.arcscan.app/tx/0x06a48f0c484232b5cbf33c2bc5ec1c5963b6e1e6e239899485283abdfd254bfb) |
+| Create subscription #1 (0.01/60s → deadbeef) | [`0xeb7f92ba…1c2ae2`](https://testnet.arcscan.app/tx/0xeb7f92baa1eb671c4b9dcc0824d489ffe3ecfa5793c78130f8f6fa64841c2ae2) |
+| Charge — contract pulled USDC from escrow and paid recipient | [`0x25e6ff2c…02e387d`](https://testnet.arcscan.app/tx/0x25e6ff2c66df559614a11b761f655e72c6b5fc4add04ba8e6823e5df902e387d) |
+| Cancel | [`0x2d2aea6c…f05509`](https://testnet.arcscan.app/tx/0x2d2aea6c829c709a259097d4fb527431e8f4b7cfb692b06d2bc427b1b0f05509) |
+| Withdraw unspent escrow | [`0x71c90270…7c8cae53`](https://testnet.arcscan.app/tx/0x71c90270f16c22780733808c8323c26df8984bf0f1d4fe530c31d5307c8cae53) |
+
+Two recurring-payment options live in production-on-testnet right now: the off-chain scheduler for low-friction agent-driven flows, and the on-chain contract for trustless ones.
 
 ## Why this exists
 
@@ -94,6 +116,7 @@ src/
   cctp.ts           CCTP V2 contracts, domain IDs, getArcDomain() query
   x402.ts           HTTP 402 paid-fetch client wired to an Arc wallet
   recurring.ts      Off-chain recurring-payment scheduler (JSON-persisted)
+  onchain-subs.ts   Typed wrapper around the deployed ArcSubscriptions contract
   agent-tools.ts    Anthropic-shape tool schemas + dispatchTool()
   openai-tools.ts   OpenAI-shape tool schemas + dispatchOpenAIToolCall()
   mcp.ts            MCP server (stdio) exposing every tool
@@ -322,7 +345,7 @@ The CLI (`bin/arc.ts`) sits on the same tools/simulate/cctp layer — no logic d
 - [x] **x402 paid-fetch client** — agents auto-pay 402 Payment Required in USDC on Arc
 - [x] **OpenAI function-call schemas + dispatcher** — full GPT / LiteLLM / vLLM parity with the Anthropic surface
 - [x] **Recurring-payment scheduler** — off-chain subscriptions, JSON-persisted, with simulate-first pre-flight
-- [ ] On-chain recurring payments (Permit2-based contract — trustless variant)
+- [x] **On-chain recurring payments** — `ArcSubscriptions.sol` deployed to Arc testnet, escrow-based, trustless
 - [ ] x402 server-side example (Hono / Express middleware using Arc as the settlement chain)
 - [ ] CCTP V2 burn helper for Arc-side `depositForBurn`
 - [ ] Iris attestation polling + dest-chain `receiveMessage` orchestration

@@ -29,7 +29,8 @@
     "example:agent": "tsx examples/claude-agent.ts",
     "example:simulate": "tsx examples/simulate-send.ts",
     "example:x402": "tsx examples/x402-pay.ts",
-    "example:subs": "tsx examples/subscription-demo.ts"
+    "example:subs": "tsx examples/subscription-demo.ts",
+    "deploy:subscriptions": "tsx scripts/deploy-subscriptions.ts"
   },
   "keywords": [
     "arc-network",
@@ -61,6 +62,7 @@
   },
   "devDependencies": {
     "@types/node": "^22.0.0",
+    "solc": "^0.8.35",
     "tsx": "^4.19.0",
     "typescript": "^5.6.0"
   },

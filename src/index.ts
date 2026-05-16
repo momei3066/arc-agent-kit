@@ -7,5 +7,6 @@ export * from "./simulate.js";
 export * from "./cctp.js";
 export * from "./x402.js";
 export * from "./recurring.js";
+export * from "./onchain-subs.js";
 // MCP server isn't re-exported from the main entry — import it from
 // "arc-agent-kit/mcp" or run the `arc-mcp` binary.

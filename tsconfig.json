@@ -17,6 +17,6 @@
     "forceConsistentCasingInFileNames": true,
     "verbatimModuleSyntax": false
   },
-  "include": ["src/**/*", "bin/**/*", "examples/**/*", "test/**/*"],
+  "include": ["src/**/*", "bin/**/*", "examples/**/*", "test/**/*", "scripts/**/*"],
   "exclude": ["node_modules", "dist"]
 }
