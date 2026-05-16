@@ -10,6 +10,7 @@ A typed toolkit that lets **LLM agents transact on [Arc Network](https://arc.net
 - An **MCP server** so Claude Desktop / Cursor / any MCP client can drive Arc directly
 - A **CLI** (`arc balance`, `arc send-usdc`, …) for humans
 - **Anthropic / OpenAI function-call schemas** for embedding in your own agents
+- **x402 payment client** — agents auto-pay HTTP `402 Payment Required` responses in USDC on Arc
 - A safe **wallet generator** that never prints the private key
 
 > Status: working on Arc public testnet (chain id `5042002`). No security review. Use testnet funds only.
@@ -66,6 +67,7 @@ src/
   tools.ts          balance, transfer, status, explorer links
   simulate.ts       Pre-flight: estimateGas + simulate + fee preview
   cctp.ts           CCTP V2 contracts, domain IDs, getArcDomain() query
+  x402.ts           HTTP 402 paid-fetch client wired to an Arc wallet
   agent-tools.ts    Anthropic-shape tool schemas + dispatchTool()
   mcp.ts            MCP server (stdio) exposing every tool
   index.ts          Public re-exports
@@ -147,6 +149,29 @@ const deps = {
 //     and feed the result back as tool_result. See examples/claude-agent.ts.
 ```
 
+## Paying for HTTP APIs via x402
+
+[x402](https://github.com/coinbase/x402) is Coinbase's HTTP-native payment protocol — a server replies with `402 Payment Required`, the client signs a payment authorization, and the server fulfills the original request. This kit wires x402's client SDK to an Arc testnet wallet, so any agent can transparently pay per API call in USDC.
+
+```ts
+import { createArcPaidFetch } from "arc-agent-kit";
+
+const paidFetch = createArcPaidFetch(process.env.ARC_PRIVATE_KEY!);
+
+// Behaves like normal fetch — but if the server replies 402, an EIP-712
+// payment authorization is signed and the request is retried automatically.
+const response = await paidFetch("https://api.example.com/paid-endpoint");
+console.log(await response.json());
+```
+
+The same capability is also exposed as:
+
+- An MCP tool: **`arc_pay_x402`** (drop into Claude Desktop and your agent can hit paywalled APIs)
+- An Anthropic / OpenAI function-call schema: **`pay_x402`**
+- A CLI-friendly example: `npm run example:x402 -- https://api.example.com/...`
+
+**Server-side gap**: x402 requires a *facilitator* to verify and settle payments. The public Coinbase facilitator does not yet advertise Arc testnet support — the client-side flow signs correctly, but third-party servers will fail at the verify step until Arc is listed (or you self-host a facilitator pointed at an Arc RPC). This is a server-side ecosystem gap, not a limitation of this module.
+
 ## Using it from any MCP client
 
 The `arc-mcp` binary speaks MCP over stdio. Any client that supports MCP (Claude Desktop, Cursor, Cline, Zed, custom hosts via the official SDK) can attach to it. Configuration shown above for Claude Desktop; the pattern is the same elsewhere.
@@ -198,6 +223,8 @@ The CLI (`bin/arc.ts`) sits on the same tools/simulate/cctp layer — no logic d
 
 ## Roadmap
 
+- [x] **x402 paid-fetch client** — agents auto-pay 402 Payment Required in USDC on Arc
+- [ ] x402 server-side example (Hono / Express middleware using Arc as the settlement chain)
 - [ ] CCTP V2 burn helper for Arc-side `depositForBurn`
 - [ ] Iris attestation polling + dest-chain `receiveMessage` orchestration
 - [ ] OpenAI function-call schema exporter (current shape drops in with a `parameters` rename)

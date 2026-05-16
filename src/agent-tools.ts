@@ -17,6 +17,7 @@ import {
   sendEURC,
   getTransactionStatus,
 } from "./tools.js";
+import { createArcPaidFetch } from "./x402.js";
 
 export const arcAgentTools = [
   {
@@ -93,6 +94,32 @@ export const arcAgentTools = [
       required: ["hash"],
     },
   },
+  {
+    name: "pay_x402",
+    description:
+      "Fetch an HTTP URL that may require x402 payment. If the server responds with 402 Payment Required, automatically signs and submits a USDC-on-Arc payment authorization, then retries the request. Returns the final response (status, headers, body). Use this when you need to call a paywalled API endpoint.",
+    input_schema: {
+      type: "object",
+      properties: {
+        url: {
+          type: "string",
+          description: "Absolute HTTP(S) URL of the API endpoint to fetch.",
+        },
+        method: {
+          type: "string",
+          enum: ["GET", "POST", "PUT", "DELETE"],
+          description:
+            "HTTP method. Defaults to GET. POST/PUT also support a `body` field.",
+        },
+        body: {
+          type: "string",
+          description:
+            "Optional request body for POST/PUT (will be sent as-is, set content-type via headers).",
+        },
+      },
+      required: ["url"],
+    },
+  },
 ] as const;
 
 export type AgentToolName = (typeof arcAgentTools)[number]["name"];
@@ -101,6 +128,10 @@ export interface DispatchDeps {
   pub: PublicClient;
   /** Required for `send_*` tools. Omit for read-only agents. */
   wallet?: WalletClient;
+  /** Required for the `pay_x402` tool. Used to sign x402 payment authorizations. */
+  privateKey?: Hex;
+  /** RPC URL forwarded into the x402 client when paying. Defaults to Arc testnet RPC. */
+  rpcUrl?: string;
 }
 
 /**
@@ -150,6 +181,36 @@ export async function dispatchTool(
           ...res,
           blockNumber: res.blockNumber?.toString() ?? null,
           gasUsed: res.gasUsed?.toString() ?? null,
+        });
+      }
+      case "pay_x402": {
+        if (!deps.privateKey) {
+          return JSON.stringify({
+            error: "private key not configured — pay_x402 requires a signing wallet",
+          });
+        }
+        const paidFetch = createArcPaidFetch(deps.privateKey, deps.rpcUrl);
+        const method = (input.method as string) ?? "GET";
+        const init: RequestInit = { method };
+        if (input.body && (method === "POST" || method === "PUT")) {
+          init.body = input.body as string;
+        }
+        const response = await paidFetch(input.url as string, init);
+        const ct = response.headers.get("content-type") ?? "";
+        const bodyText = await response.text();
+        let body: unknown = bodyText;
+        if (ct.includes("application/json")) {
+          try {
+            body = JSON.parse(bodyText);
+          } catch {
+            body = bodyText;
+          }
+        }
+        return JSON.stringify({
+          status: response.status,
+          statusText: response.statusText,
+          contentType: ct,
+          body,
         });
       }
       default:

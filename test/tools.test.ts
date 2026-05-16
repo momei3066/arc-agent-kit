@@ -17,6 +17,7 @@ import {
 import { CCTP_DOMAINS, domainForChain } from "../src/cctp.js";
 import { explorerLink, addressLink } from "../src/tools.js";
 import { buildServer } from "../src/mcp.js";
+import { X402_ARC_NETWORK, buildArcX402Client } from "../src/x402.js";
 
 test("Arc testnet chain config matches docs", () => {
   assert.equal(ARC_TESTNET_CHAIN_ID, 5042002);
@@ -78,4 +79,32 @@ test("explorer links are well-formed", () => {
 test("MCP server builds without a private key (read-only mode)", () => {
   const server = buildServer({});
   assert.ok(server, "buildServer({}) returns an McpServer instance");
+});
+
+test("x402 network identifier is Arc testnet's CAIP-2", () => {
+  assert.equal(X402_ARC_NETWORK, "eip155:5042002");
+});
+
+test("x402 client builds against a throwaway test key", () => {
+  // 32 bytes of 0x11 — deterministic test key, never funded, never used.
+  const testKey = `0x${"11".repeat(32)}` as const;
+  const { client, from } = buildArcX402Client(testKey);
+  assert.ok(client, "buildArcX402Client returns an x402Client");
+  assert.match(from, /^0x[a-fA-F0-9]{40}$/, "derives a valid address");
+});
+
+test("x402 client rejects malformed private keys", () => {
+  assert.throws(
+    () => buildArcX402Client("not-a-key" as `0x${string}`),
+    /Invalid private key/,
+  );
+  assert.throws(
+    () => buildArcX402Client("0x1234" as `0x${string}`),
+    /Invalid private key/,
+  );
+});
+
+test("agent toolset includes pay_x402", () => {
+  const names = new Set<string>(arcAgentTools.map((t) => t.name));
+  assert.ok(names.has("pay_x402"), "pay_x402 tool is registered");
 });

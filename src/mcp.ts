@@ -37,6 +37,7 @@ import {
   formatSimulation,
 } from "./simulate.js";
 import { getArcDomain, getCctpContracts } from "./cctp.js";
+import { createArcPaidFetch } from "./x402.js";
 import {
   ARC_TESTNET_CHAIN_ID,
   ARC_TESTNET_EXPLORER,
@@ -270,6 +271,73 @@ export function buildServer(opts: BuildServerOptions = {}): McpServer {
       );
       return {
         content: [{ type: "text", text: `Sent. ${hash}\n${explorerUrl}` }],
+      };
+    },
+  );
+
+  // -------------------- x402 paid fetch --------------------
+
+  server.tool(
+    "arc_pay_x402",
+    "Fetch an HTTP URL that may require x402 payment. If the server replies with 402 Payment Required, signs a USDC-on-Arc payment authorization and retries automatically. Returns the final HTTP response (status + body). Requires signing wallet.",
+    {
+      url: z
+        .string()
+        .url("expected absolute http(s) URL")
+        .describe("Absolute HTTP(S) URL of the API endpoint to fetch."),
+      method: z
+        .enum(["GET", "POST", "PUT", "DELETE"])
+        .optional()
+        .describe("HTTP method. Defaults to GET."),
+      body: z
+        .string()
+        .optional()
+        .describe("Optional request body for POST/PUT."),
+    },
+    async ({ url, method, body }) => {
+      if (!opts.privateKey) {
+        return {
+          isError: true,
+          content: [
+            {
+              type: "text",
+              text: "x402 client needs a signing wallet. Start arc-mcp with ARC_PRIVATE_KEY set.",
+            },
+          ],
+        };
+      }
+      const paidFetch = createArcPaidFetch(opts.privateKey, opts.rpcUrl);
+      const m = method ?? "GET";
+      const init: RequestInit = { method: m };
+      if (body && (m === "POST" || m === "PUT")) init.body = body;
+
+      const response = await paidFetch(url, init);
+      const ct = response.headers.get("content-type") ?? "";
+      const bodyText = await response.text();
+      let parsed: unknown = bodyText;
+      if (ct.includes("application/json")) {
+        try {
+          parsed = JSON.parse(bodyText);
+        } catch {
+          /* fall back to raw text */
+        }
+      }
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                status: response.status,
+                statusText: response.statusText,
+                contentType: ct,
+                body: parsed,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
       };
     },
   );
