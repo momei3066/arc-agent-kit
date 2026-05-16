@@ -15,6 +15,19 @@ A typed toolkit that lets **LLM agents transact on [Arc Network](https://arc.net
 
 > Status: working on Arc public testnet (chain id `5042002`). No security review. Use testnet funds only.
 
+## Live on testnet
+
+Verified end-to-end against Arc public testnet on 2026-05-16:
+
+| | |
+|---|---|
+| **Tx hash** | [`0xa6c443646197046ac27fb7f11a1ead6163401db1339f73df38da78afd1e83a75`](https://testnet.arcscan.app/tx/0xa6c443646197046ac27fb7f11a1ead6163401db1339f73df38da78afd1e83a75) |
+| Block | `42432006` |
+| Status | ✅ success |
+| Amount | 0.01 USDC |
+| Fee | 0.00042 USDC |
+| Simulation accuracy | exact — `simulate_send_usdc` predicted the fee to 18 decimal places before broadcasting |
+
 ## Why this exists
 
 Arc went public testnet with a focus on stablecoin payments, AI-driven economic coordination, and CCTP-powered cross-chain flows. Most of that surface is reachable through plain EVM tools — but agents need typed, sandboxed primitives, simulation before send, and an MCP transport to actually be useful. This kit packages that.
