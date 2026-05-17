@@ -1,0 +1,27 @@
+1
+00:00:00,000 --> 00:00:02,500
+arc-agent-kit — typed toolkit for LLM agents on Arc
+
+2
+00:00:03,000 --> 00:00:09,000
+Chain config: Arc public testnet, chainId 5042002
+
+3
+00:00:10,000 --> 00:00:17,000
+Read balances on-chain via viem — USDC + EURC, 18-decimal precision
+
+4
+00:00:18,000 --> 00:00:26,000
+Pre-flight simulation: every send is a dry-run first — gas, fee, success
+
+5
+00:00:27,000 --> 00:00:37,000
+Broadcasting a real USDC transfer on Arc testnet…
+
+6
+00:00:38,000 --> 00:00:44,000
+Confirmed. Predicted fee matched on-chain fee to 18 decimals
+
+7
+00:00:45,000 --> 00:00:50,000
+Also ships: MCP server · x402 client · on-chain subscriptions

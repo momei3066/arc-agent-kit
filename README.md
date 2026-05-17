@@ -62,6 +62,23 @@ The deploy was followed by a complete end-to-end run against the live contract �
 
 Two recurring-payment options live in production-on-testnet right now: the off-chain scheduler for low-friction agent-driven flows, and the on-chain contract for trustless ones.
 
+## See it run
+
+A ~45-second screencast walks through the full flow on Arc testnet: chain config → balance → pre-flight simulation → real USDC transfer → confirmation.
+
+<!-- After recording, upload demo.mp4 as a GitHub Release asset and paste the asset URL between the <video> tags below. GitHub renders mp4 release assets inline in markdown. -->
+
+<!-- <video src="REPLACE-WITH-RELEASE-ASSET-URL" controls width="720"></video> -->
+
+The demo is **reproducible** — anyone who clones the repo and funds a testnet wallet can regenerate it byte-for-byte:
+
+```bash
+bash demo/run-demo.sh            # dry-run (simulation only, no broadcast)
+bash demo/run-demo.sh --real     # real 0.001 USDC transfer on Arc testnet
+```
+
+Recording walkthrough, subtitle file, and ffmpeg one-liner: [`demo/RECORDING.md`](./demo/RECORDING.md).
+
 ## Why this exists
 
 Arc went public testnet with a focus on stablecoin payments, AI-driven economic coordination, and CCTP-powered cross-chain flows. Most of that surface is reachable through plain EVM tools — but agents need typed, sandboxed primitives, simulation before send, and an MCP transport to actually be useful. This kit packages that.
