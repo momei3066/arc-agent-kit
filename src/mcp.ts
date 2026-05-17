@@ -39,6 +39,18 @@ import {
 import { getArcDomain, getCctpContracts } from "./cctp.js";
 import { createArcPaidFetch } from "./x402.js";
 import {
+  arcSubscriptionsAddress,
+  cancelOnchainSubscription,
+  chargeOnchainSubscription,
+  createOnchainSubscription,
+  depositEscrow,
+  getCreatedSubscriptionId,
+  getEscrowBalance,
+  getOnchainSubscription,
+  isSubscriptionDue,
+  withdrawEscrow,
+} from "./onchain-subs.js";
+import {
   ARC_TESTNET_CHAIN_ID,
   ARC_TESTNET_EXPLORER,
   FAUCET_URL,
@@ -338,6 +350,185 @@ export function buildServer(opts: BuildServerOptions = {}): McpServer {
             ),
           },
         ],
+      };
+    },
+  );
+
+  // -------------------- on-chain ArcSubscriptions contract --------------------
+
+  server.tool(
+    "arc_onchain_address",
+    "Returns the address of the deployed ArcSubscriptions contract on Arc testnet.",
+    {},
+    async () => ({
+      content: [{ type: "text", text: arcSubscriptionsAddress() }],
+    }),
+  );
+
+  server.tool(
+    "arc_onchain_escrow_balance",
+    "Read the on-chain escrow balance for a given payer (the USDC they've deposited into ArcSubscriptions). Returns decimal USDC.",
+    { payer: addressSchema },
+    async ({ payer }) => {
+      const { formatted } = await getEscrowBalance(pub, payer as Address);
+      return {
+        content: [{ type: "text", text: `${formatted} USDC in escrow for ${payer}` }],
+      };
+    },
+  );
+
+  server.tool(
+    "arc_onchain_subscription_status",
+    "Read the current state of an on-chain subscription by numeric id: payer, recipient, amount, interval, ticks, active.",
+    {
+      id: z
+        .string()
+        .regex(/^\d+$/, "subscription id must be a positive integer string"),
+    },
+    async ({ id }) => {
+      const s = await getOnchainSubscription(pub, BigInt(id));
+      return {
+        content: [
+          {
+            type: "text",
+            text: JSON.stringify(
+              {
+                id,
+                payer: s.payer,
+                recipient: s.recipient,
+                amountUSDC: s.amountUSDC,
+                intervalSeconds: s.intervalSeconds.toString(),
+                lastChargedAt: s.lastChargedAt.toString(),
+                ticks: s.ticks.toString(),
+                active: s.active,
+              },
+              null,
+              2,
+            ),
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    "arc_onchain_subscription_due",
+    "Returns whether the given on-chain subscription id is currently due (would charge() succeed right now?). Boolean.",
+    {
+      id: z.string().regex(/^\d+$/),
+    },
+    async ({ id }) => {
+      const due = await isSubscriptionDue(pub, BigInt(id));
+      return { content: [{ type: "text", text: due ? "true" : "false" }] };
+    },
+  );
+
+  server.tool(
+    "arc_onchain_deposit",
+    "Deposit native USDC into the signer's escrow balance on the ArcSubscriptions contract. Required before creating or charging a subscription. Returns the tx hash.",
+    { amount: amountSchema },
+    async ({ amount }) => {
+      if (!wallet) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: "No signing wallet configured." }],
+        };
+      }
+      const r = await depositEscrow(wallet, amount);
+      return {
+        content: [{ type: "text", text: `Deposited. ${r.hash}\n${r.explorerUrl}` }],
+      };
+    },
+  );
+
+  server.tool(
+    "arc_onchain_withdraw",
+    "Withdraw native USDC from the signer's escrow balance on ArcSubscriptions. Returns tx hash.",
+    { amount: amountSchema },
+    async ({ amount }) => {
+      if (!wallet) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: "No signing wallet configured." }],
+        };
+      }
+      const r = await withdrawEscrow(wallet, amount);
+      return {
+        content: [{ type: "text", text: `Withdrew. ${r.hash}\n${r.explorerUrl}` }],
+      };
+    },
+  );
+
+  server.tool(
+    "arc_onchain_create_subscription",
+    "Create an on-chain subscription: <recipient> will be paid <amount> USDC every <intervalSeconds>. The signer must have enough escrow balance for the first charge. Returns tx hash and the new subscription id.",
+    {
+      recipient: addressSchema,
+      amount: amountSchema,
+      intervalSeconds: z.number().int().min(60),
+    },
+    async ({ recipient, amount, intervalSeconds }) => {
+      if (!wallet) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: "No signing wallet configured." }],
+        };
+      }
+      const r = await createOnchainSubscription(
+        wallet,
+        recipient as Address,
+        amount,
+        intervalSeconds,
+      );
+      await pub.waitForTransactionReceipt({ hash: r.hash });
+      const id = await getCreatedSubscriptionId(pub, r.hash);
+      return {
+        content: [
+          {
+            type: "text",
+            text: `Created sub #${id ?? "(unknown)"}. ${r.hash}\n${r.explorerUrl}`,
+          },
+        ],
+      };
+    },
+  );
+
+  server.tool(
+    "arc_onchain_charge",
+    "Crank an on-chain subscription: fire `charge(id)` if it's due. Anyone can call this — the contract verifies eligibility. Returns tx hash.",
+    {
+      id: z.string().regex(/^\d+$/),
+    },
+    async ({ id }) => {
+      if (!wallet) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: "No signing wallet configured." }],
+        };
+      }
+      const r = await chargeOnchainSubscription(wallet, BigInt(id));
+      return {
+        content: [{ type: "text", text: `Charged. ${r.hash}\n${r.explorerUrl}` }],
+      };
+    },
+  );
+
+  server.tool(
+    "arc_onchain_cancel",
+    "Cancel an on-chain subscription you own (only the payer can cancel). Returns tx hash.",
+    {
+      id: z.string().regex(/^\d+$/),
+    },
+    async ({ id }) => {
+      if (!wallet) {
+        return {
+          isError: true,
+          content: [{ type: "text", text: "No signing wallet configured." }],
+        };
+      }
+      const r = await cancelOnchainSubscription(wallet, BigInt(id));
+      return {
+        content: [{ type: "text", text: `Cancelled. ${r.hash}\n${r.explorerUrl}` }],
       };
     },
   );

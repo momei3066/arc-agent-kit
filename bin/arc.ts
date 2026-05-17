@@ -45,6 +45,18 @@ import {
   DEFAULT_STORE_PATH,
 } from "../src/recurring.js";
 import {
+  arcSubscriptionsAddress,
+  cancelOnchainSubscription,
+  chargeOnchainSubscription,
+  createOnchainSubscription,
+  depositEscrow,
+  getCreatedSubscriptionId,
+  getEscrowBalance,
+  getOnchainSubscription,
+  isSubscriptionDue,
+  withdrawEscrow,
+} from "../src/onchain-subs.js";
+import {
   ARC_TESTNET_CHAIN_ID,
   ARC_TESTNET_EXPLORER,
   ARC_TESTNET_RPC,
@@ -71,6 +83,17 @@ Commands:
   subs tick                                    Run one scheduler pass (cron-friendly).
   subs run                                     Run scheduler in foreground (Ctrl-C to stop).
   subs preview                                  Will the wallet cover the next charge cycle?
+
+  On-chain (trustless via the deployed ArcSubscriptions contract):
+  onchain address                              Print the deployed contract address.
+  onchain balance [payer]                      Read escrow balance (defaults to signer).
+  onchain deposit <amount>                     Deposit native USDC into your escrow.
+  onchain withdraw <amount>                    Withdraw unspent escrow.
+  onchain create <to> <amount> <interval>      Create a new subscription on-chain.
+  onchain charge <id>                          Crank: fire the charge if due.
+  onchain cancel <id>                          Cancel a subscription you own.
+  onchain status <id>                          Read a subscription's current state.
+  onchain due <id>                             Boolean: would charge() succeed right now?
 
   help                              Show this help.
 
@@ -252,6 +275,11 @@ async function main() {
       return;
     }
 
+    case "onchain": {
+      await runOnchainCommand(pub, a, b, c, process.argv.slice(6));
+      return;
+    }
+
     default:
       fail(`unknown command: ${cmd}\n\n${HELP}`);
   }
@@ -368,6 +396,134 @@ async function runSubsCommand(
 
 function bigintSerializer(_key: string, value: unknown): unknown {
   return typeof value === "bigint" ? value.toString() : value;
+}
+
+/* -------------------- onchain subcommand -------------------- */
+
+async function runOnchainCommand(
+  pub: ReturnType<typeof publicClient>,
+  sub?: string,
+  arg1?: string,
+  arg2?: string,
+  rest: string[] = [],
+): Promise<void> {
+  switch (sub) {
+    case "address": {
+      console.log(arcSubscriptionsAddress());
+      return;
+    }
+
+    case "balance": {
+      let who: Address;
+      if (arg1) {
+        if (!isAddress(arg1)) return fail("onchain balance: address must be 0x-prefixed 40-char hex");
+        who = arg1;
+      } else {
+        who = getWallet().account!.address;
+      }
+      const { formatted } = await getEscrowBalance(pub, who);
+      console.log(`Escrow for ${who}: ${formatted} USDC`);
+      return;
+    }
+
+    case "deposit": {
+      if (!arg1) return fail("onchain deposit: need <amount>");
+      const wallet = getWallet();
+      console.log(`Depositing ${arg1} USDC into escrow...`);
+      const res = await depositEscrow(wallet, arg1);
+      console.log(`Tx: ${res.hash}\n    ${res.explorerUrl}`);
+      await pub.waitForTransactionReceipt({ hash: res.hash });
+      const after = await getEscrowBalance(pub, wallet.account!.address);
+      console.log(`Balance now: ${after.formatted} USDC`);
+      return;
+    }
+
+    case "withdraw": {
+      if (!arg1) return fail("onchain withdraw: need <amount>");
+      const wallet = getWallet();
+      console.log(`Withdrawing ${arg1} USDC from escrow...`);
+      const res = await withdrawEscrow(wallet, arg1);
+      console.log(`Tx: ${res.hash}\n    ${res.explorerUrl}`);
+      await pub.waitForTransactionReceipt({ hash: res.hash });
+      const after = await getEscrowBalance(pub, wallet.account!.address);
+      console.log(`Balance now: ${after.formatted} USDC`);
+      return;
+    }
+
+    case "create": {
+      if (!isAddress(arg1) || !arg2 || !rest[0]) {
+        return fail("onchain create: need <to> <amount> <interval>\n  e.g. arc onchain create 0xabc 0.01 1h");
+      }
+      const intervalSeconds = parseDuration(rest[0]!);
+      const wallet = getWallet();
+      console.log(`Creating ${arg2} USDC / ${intervalSeconds}s subscription → ${arg1}...`);
+      const res = await createOnchainSubscription(wallet, arg1, arg2, intervalSeconds);
+      console.log(`Tx: ${res.hash}\n    ${res.explorerUrl}`);
+      await pub.waitForTransactionReceipt({ hash: res.hash });
+      const id = await getCreatedSubscriptionId(pub, res.hash);
+      console.log(`New subscription id: ${id ?? "(could not parse from receipt)"}`);
+      return;
+    }
+
+    case "charge": {
+      if (!arg1) return fail("onchain charge: need <id>");
+      const id = BigInt(arg1);
+      const wallet = getWallet();
+      const res = await chargeOnchainSubscription(wallet, id);
+      console.log(`Tx: ${res.hash}\n    ${res.explorerUrl}`);
+      await pub.waitForTransactionReceipt({ hash: res.hash });
+      const after = await getOnchainSubscription(pub, id);
+      console.log(`ticks now: ${after.ticks}`);
+      return;
+    }
+
+    case "cancel": {
+      if (!arg1) return fail("onchain cancel: need <id>");
+      const id = BigInt(arg1);
+      const wallet = getWallet();
+      const res = await cancelOnchainSubscription(wallet, id);
+      console.log(`Tx: ${res.hash}\n    ${res.explorerUrl}`);
+      await pub.waitForTransactionReceipt({ hash: res.hash });
+      console.log("Cancelled.");
+      return;
+    }
+
+    case "status": {
+      if (!arg1) return fail("onchain status: need <id>");
+      const id = BigInt(arg1);
+      const s = await getOnchainSubscription(pub, id);
+      console.log(
+        JSON.stringify(
+          {
+            id: arg1,
+            payer: s.payer,
+            recipient: s.recipient,
+            amountUSDC: s.amountUSDC,
+            intervalSeconds: s.intervalSeconds.toString(),
+            lastChargedAt: s.lastChargedAt.toString(),
+            ticks: s.ticks.toString(),
+            active: s.active,
+          },
+          null,
+          2,
+        ),
+      );
+      return;
+    }
+
+    case "due": {
+      if (!arg1) return fail("onchain due: need <id>");
+      const due = await isSubscriptionDue(pub, BigInt(arg1));
+      console.log(due ? "yes" : "no");
+      return;
+    }
+
+    default:
+      fail(
+        `onchain: unknown subcommand "${sub ?? ""}".\n` +
+          "Try: address | balance | deposit | withdraw | create | charge | cancel | status | due",
+      );
+  }
 }
 
 function fail(msg: string): never {
