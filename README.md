@@ -271,7 +271,36 @@ The same capability is also exposed as:
 - An Anthropic / OpenAI function-call schema: **`pay_x402`**
 - A CLI-friendly example: `npm run example:x402 -- https://api.example.com/...`
 
-**Server-side gap**: x402 requires a *facilitator* to verify and settle payments. The public Coinbase facilitator does not yet advertise Arc testnet support — the client-side flow signs correctly, but third-party servers will fail at the verify step until Arc is listed (or you self-host a facilitator pointed at an Arc RPC). This is a server-side ecosystem gap, not a limitation of this module.
+**Server-side gap**: canonical x402 requires a *facilitator* to verify EIP-3009 payment authorizations. The public Coinbase facilitator does not yet advertise Arc testnet — the canonical client-side flow signs correctly, but third-party servers fail at the verify step until Arc is listed.
+
+### Closing the loop today — Arc proof-of-payment
+
+To keep the HTTP-402 idiom usable on Arc *right now*, this kit ships a simplified facilitator-free variant: the server returns a JSON challenge naming a recipient and price, the client transfers native USDC on Arc itself, then retries with an `X-PAYMENT-PROOF: <base64>` header carrying the tx hash. The server independently reads the receipt from the Arc RPC and verifies `from`, `to`, `value`, and that the `(nonce, txHash)` pair hasn't been replayed before unlocking the response.
+
+```ts
+import { Hono } from "hono";
+import { ArcPaymentServer, type PaymentProof } from "arc-agent-kit";
+
+const server = new ArcPaymentServer({
+  recipient: "0xMerchantAddress",
+  pricePerRequest: "0.001",
+});
+const app = new Hono();
+app.get("/paid/data", async (c) => {
+  const proofHeader = c.req.header("x-payment-proof");
+  if (!proofHeader) return c.json(server.challenge("/paid/data"), 402);
+  const proof = ArcPaymentServer.decodeProofHeader(proofHeader)!;
+  const result = await server.verify(proof, "/paid/data");
+  if (!result.ok) return c.json({ error: result.reason }, 402);
+  return c.json({ secret: "…", paymentTx: result.txHash });
+});
+```
+
+The full demo, including the agent-side `paidFetch` that handles the 402 dance automatically, is in [`examples/x402-end-to-end.ts`](./examples/x402-end-to-end.ts). It runs the server in-process, fires an unpaid request to confirm the 402, then has an agent wallet pay-and-retry. The first run produced this real Arc testnet tx:
+
+[`0x6fa7eb77f3260d3d2426234b0511df6a2af5311f4cc39525b44fc828df8fe57c`](https://testnet.arcscan.app/tx/0x6fa7eb77f3260d3d2426234b0511df6a2af5311f4cc39525b44fc828df8fe57c) — 0.001 USDC, unlocked the response in 2.9 seconds end-to-end.
+
+When Coinbase ships an Arc-aware facilitator, the canonical EIP-3009 exact-EVM scheme will drop in alongside this. Until then, proof-of-payment is the only x402-shaped flow on Arc that actually closes.
 
 ## Recurring payments — the first agent-managed subscription primitive on Arc
 
@@ -363,7 +392,7 @@ The CLI (`bin/arc.ts`) sits on the same tools/simulate/cctp layer — no logic d
 - [x] **OpenAI function-call schemas + dispatcher** — full GPT / LiteLLM / vLLM parity with the Anthropic surface
 - [x] **Recurring-payment scheduler** — off-chain subscriptions, JSON-persisted, with simulate-first pre-flight
 - [x] **On-chain recurring payments** — `ArcSubscriptions.sol` deployed to Arc testnet, escrow-based, trustless
-- [ ] x402 server-side example (Hono / Express middleware using Arc as the settlement chain)
+- [x] **x402 server-side proof-of-payment** — Hono server + Arc-native receipt verification; end-to-end proven on testnet ([tx](https://testnet.arcscan.app/tx/0x6fa7eb77f3260d3d2426234b0511df6a2af5311f4cc39525b44fc828df8fe57c))
 - [ ] CCTP V2 burn helper for Arc-side `depositForBurn`
 - [ ] Iris attestation polling + dest-chain `receiveMessage` orchestration
 - [ ] Gateway deposit / withdraw flow

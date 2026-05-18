@@ -29,6 +29,10 @@ import {
   setStatus,
   type SubscriptionStore,
 } from "../src/recurring.js";
+import {
+  ArcPaymentServer,
+  type PaymentProof,
+} from "../src/x402-server.js";
 
 test("Arc testnet chain config matches docs", () => {
   assert.equal(ARC_TESTNET_CHAIN_ID, 5042002);
@@ -200,6 +204,73 @@ test("recurring: createSubscription + setStatus lifecycle", () => {
   assert.equal(store.subscriptions[0]!.status, "cancelled");
 
   assert.throws(() => setStatus(store, "nonexistent", "paused"));
+});
+
+test("x402 proof header round-trips through base64 JSON", () => {
+  const proof: PaymentProof = {
+    txHash: ("0x" + "1".repeat(64)) as `0x${string}`,
+    nonce: "deadbeefcafef00d",
+    payer: ("0x" + "a".repeat(40)) as `0x${string}`,
+  };
+  const encoded = ArcPaymentServer.encodeProofHeader(proof);
+  const decoded = ArcPaymentServer.decodeProofHeader(encoded);
+  assert.deepEqual(decoded, proof);
+});
+
+test("x402 proof header rejects malformed input", () => {
+  assert.equal(ArcPaymentServer.decodeProofHeader("not-base64-and-not-json"), null);
+  // valid base64 but not the expected JSON shape
+  const garbage = Buffer.from(JSON.stringify({ foo: 1 }), "utf8").toString("base64");
+  assert.equal(ArcPaymentServer.decodeProofHeader(garbage), null);
+});
+
+test("x402 server issues challenges that point at Arc testnet + the configured recipient", () => {
+  const recipient = ("0x" + "b".repeat(40)) as `0x${string}`;
+  const server = new ArcPaymentServer({
+    recipient,
+    pricePerRequest: "0.01",
+  });
+  const challenge = server.challenge("/paid/foo");
+  assert.equal(challenge.scheme, "arc-proof-of-payment");
+  assert.equal(challenge.network, "eip155:5042002");
+  assert.equal(challenge.recipient, recipient);
+  assert.equal(challenge.amount, "0.01");
+  assert.equal(challenge.resource, "/paid/foo");
+  assert.match(challenge.nonce, /^[0-9a-f]{32}$/);
+  assert.ok(challenge.expiresAt > Date.now());
+});
+
+test("x402 server rejects verification with unknown nonce", async () => {
+  const server = new ArcPaymentServer({
+    recipient: ("0x" + "b".repeat(40)) as `0x${string}`,
+    pricePerRequest: "0.01",
+  });
+  const bogus: PaymentProof = {
+    txHash: ("0x" + "1".repeat(64)) as `0x${string}`,
+    nonce: "never-issued",
+    payer: ("0x" + "a".repeat(40)) as `0x${string}`,
+  };
+  const result = await server.verify(bogus, "/paid/foo");
+  assert.equal(result.ok, false);
+  assert.match(result.reason ?? "", /unknown.*nonce/);
+});
+
+test("x402 server rejects a proof carrying the wrong resource for the nonce", async () => {
+  const server = new ArcPaymentServer({
+    recipient: ("0x" + "b".repeat(40)) as `0x${string}`,
+    pricePerRequest: "0.01",
+  });
+  const challenge = server.challenge("/paid/a");
+  const result = await server.verify(
+    {
+      txHash: ("0x" + "1".repeat(64)) as `0x${string}`,
+      nonce: challenge.nonce,
+      payer: ("0x" + "a".repeat(40)) as `0x${string}`,
+    },
+    "/paid/b",
+  );
+  assert.equal(result.ok, false);
+  assert.match(result.reason ?? "", /different resource/);
 });
 
 test("OpenAI dispatcher parses JSON arguments and rejects malformed ones", async () => {
